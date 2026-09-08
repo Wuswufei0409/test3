@@ -54,6 +54,10 @@ const dropsGroup = new THREE.Group();
 const projectileGroup = new THREE.Group();
 scene.add(worldGroup, entityGroup, dropsGroup, projectileGroup);
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const topGeo = new THREE.PlaneGeometry(1, 1);
+topGeo.rotateX(-Math.PI / 2);
+const baseGeo = new THREE.PlaneGeometry(224, 224);
+baseGeo.rotateX(-Math.PI / 2);
 const raycaster = new THREE.Raycaster();
 raycaster.far = 6;
 const center = new THREE.Vector2(0, 0);
@@ -84,6 +88,9 @@ let modifications = new Map(),
   chunks = new Set(),
   chunkCenter = "",
   difficulty = "normal";
+let stations = new Map(),
+  restoredEntities = null,
+  carried = null;
 const VIEW_DISTANCE = 6;
 let player = {
   x: 0,
@@ -164,25 +171,79 @@ function buildWorld() {
   chunks.clear();
   const px = Math.floor(player.x / 16),
     pz = Math.floor(player.z / 16),
-    byType = {};
+    byType = {},
+    surfaces = {};
   chunkCenter = `${px},${pz}`;
+  const base = new THREE.Mesh(baseGeo, materials.get("stone"));
+  base.position.set(player.x, -0.49, player.z);
+  worldGroup.add(base);
   for (let cz = pz - VIEW_DISTANCE; cz <= pz + VIEW_DISTANCE; cz++)
     for (let cx = px - VIEW_DISTANCE; cx <= px + VIEW_DISTANCE; cx++) {
       chunks.add(`${cx},${cz}`);
       for (let z = cz * 16; z < cz * 16 + 16; z++)
         for (let x = cx * 16; x < cx * 16 + 16; x++) {
           const h = terrainHeight(x, z, seed);
-          for (let y = Math.max(0, h - 1); y <= h; y++) {
-            const id = actualBlock(x, y, z);
-            if (id) (byType[id] ??= []).push({ x, y, z });
+          let surfaceY = h,
+            id = actualBlock(x, surfaceY, z);
+          while (!id && surfaceY > h - 5) id = actualBlock(x, --surfaceY, z);
+          const nearPlayer =
+            Math.abs(x - player.x) <= 32 && Math.abs(z - player.z) <= 32;
+          if (id) {
+            if (nearPlayer) (byType[id] ??= []).push({ x, y: surfaceY, z });
+            else
+              (surfaces[id] ??= []).push({
+                x,
+                y: surfaceY + 0.501,
+                z,
+                blockY: surfaceY,
+              });
           }
           if (h < SEA_LEVEL) {
-            const id = actualBlock(x, SEA_LEVEL, z);
-            if (id) (byType[id] ??= []).push({ x, y: SEA_LEVEL, z });
+            const water = actualBlock(x, SEA_LEVEL, z);
+            if (water) {
+              if (nearPlayer)
+                (byType[water] ??= []).push({ x, y: SEA_LEVEL, z });
+              else
+                (surfaces[water] ??= []).push({
+                  x,
+                  y: SEA_LEVEL + 0.501,
+                  z,
+                  blockY: SEA_LEVEL,
+                });
+            }
           }
           addFeature(byType, x, h, z);
         }
     }
+  for (const [key, id] of modifications) {
+    if (!id) continue;
+    const [x, y, z] = key.split(",").map(Number);
+    if (
+      Math.abs(Math.floor(x / 16) - px) <= VIEW_DISTANCE &&
+      Math.abs(Math.floor(z / 16) - pz) <= VIEW_DISTANCE
+    )
+      (byType[id] ??= []).push({ x, y, z });
+  }
+  for (const [id, poses] of Object.entries(surfaces)) {
+    const mesh = new THREE.InstancedMesh(
+        topGeo,
+        materials.get(id),
+        poses.length,
+      ),
+      o = new THREE.Object3D();
+    poses.forEach((p, i) => {
+      o.position.set(p.x, p.y, p.z);
+      o.updateMatrix();
+      mesh.setMatrixAt(i, o.matrix);
+    });
+    mesh.userData = {
+      id,
+      poses: poses.map((p) => ({ x: p.x, y: p.blockY, z: p.z })),
+    };
+    mesh.instanceMatrix.needsUpdate = true;
+    worldGroup.add(mesh);
+    blockMeshes.push(mesh);
+  }
   for (const [id, poses] of Object.entries(byType)) {
     const mesh = new THREE.InstancedMesh(
       boxGeo,
@@ -309,6 +370,13 @@ function spawnEntities() {
       phase: i,
       speed: 0.4 + noise2(i, 2, seed) * 0.5,
     });
+  }
+  if (restoredEntities) {
+    restoredEntities.slice(0, entities.length).forEach((saved, i) => {
+      entities[i].mesh.position.set(saved.x, saved.y, saved.z);
+      entities[i].hp = saved.hp;
+    });
+    restoredEntities = null;
   }
 }
 function updateEntities(dt) {
@@ -544,20 +612,61 @@ function updateProjectiles(dt) {
 }
 
 function target() {
-  raycaster.setFromCamera(center, camera);
-  const hits = raycaster.intersectObjects(
-    [...blockMeshes, ...entityGroup.children],
-    false,
-  );
-  return hits[0];
+  const direction = new THREE.Vector3();
+  camera.getWorldDirection(direction);
+  let blockHit = null,
+    previous = null;
+  for (let distance = 0.15; distance <= 6; distance += 0.12) {
+    const point = camera.position.clone().addScaledVector(direction, distance),
+      position = {
+        x: Math.floor(point.x + 0.5),
+        y: Math.floor(point.y + 0.5),
+        z: Math.floor(point.z + 0.5),
+      },
+      id = actualBlock(position.x, position.y, position.z);
+    if (id && !BLOCKS[id]?.liquid) {
+      const normal = previous
+        ? new THREE.Vector3(
+            previous.x - position.x,
+            previous.y - position.y,
+            previous.z - position.z,
+          )
+        : direction.clone().negate().round();
+      blockHit = {
+        object: { userData: { poses: [position] } },
+        instanceId: 0,
+        point,
+        face: { normal },
+        distance,
+      };
+      break;
+    }
+    previous = position;
+  }
+  let entityHit = null;
+  for (const entity of entities) {
+    const relative = entity.mesh.position.clone().sub(camera.position),
+      distance = relative.dot(direction);
+    if (distance <= 0 || distance > 6 || distance >= (blockHit?.distance ?? 7))
+      continue;
+    const perpendicular = relative
+      .clone()
+      .sub(direction.clone().multiplyScalar(distance))
+      .length();
+    if (perpendicular < 0.85 && (!entityHit || distance < entityHit.distance))
+      entityHit = { object: entity.mesh, distance };
+  }
+  return entityHit || blockHit;
 }
 function actPlace() {
   const hit = target();
   if (!hit || entityGroup.children.includes(hit.object)) return;
-  const p = hit.point
-    .clone()
-    .add(hit.face.normal.clone().multiplyScalar(0.51))
-    .floor();
+  const base = hit.object.userData.poses[hit.instanceId],
+    p = new THREE.Vector3(
+      base.x + hit.face.normal.x,
+      base.y + hit.face.normal.y,
+      base.z + hit.face.normal.z,
+    );
   const slot = inventory.slots[selected];
   if (!slot || !BLOCKS[slot.id] || BLOCKS[slot.id].liquid)
     return toast("选择一个可放置方块");
@@ -568,6 +677,8 @@ function actPlace() {
   )
     return toast("此处不能放置");
   modifications.set(keyOf(p.x, p.y, p.z), slot.id);
+  if (slot.id === "chest" || slot.id === "furnace")
+    stations.set(keyOf(p.x, p.y, p.z), { type: slot.id, slots: [] });
   slot.count--;
   if (!slot.count) inventory.slots[selected] = null;
   buildWorld();
@@ -682,6 +793,7 @@ function finishBreak() {
     const { id, pos } = breakState,
       item = inventory.slots[selected]?.id;
     modifications.set(keyOf(pos.x, pos.y, pos.z), null);
+    stations.delete(keyOf(pos.x, pos.y, pos.z));
     if (canHarvest(id, item)) {
       const drop = BLOCKS[id].drop || id;
       spawnDrop(pos.x, pos.y + 0.3, pos.z, drop);
@@ -758,13 +870,12 @@ function renderHud() {
   const s = inventory.slots[selected];
   $("#held").style.background =
     `#${(BLOCKS[s?.id]?.color || 0x6d7479).toString(16).padStart(6, "0")}`;
-  renderInventory();
 }
 function renderInventory() {
   $("#inventory").innerHTML = inventory.slots
     .map(
-      (s) =>
-        `<div class="inv-slot">${s ? `<span>${ALL_DEFINITIONS[s.id]?.name || s.id}</span><b>${s.count}</b>` : ""}</div>`,
+      (s, i) =>
+        `<button class="inv-slot" data-inv="${i}">${s ? `<span>${ALL_DEFINITIONS[s.id]?.name || s.id}</span><b>${s.count}</b>` : ""}</button>`,
     )
     .join("");
   $("#recipes").innerHTML = RECIPES.map(
@@ -781,9 +892,55 @@ function renderInventory() {
         if (inventory.craft(RECIPES[+b.dataset.recipe])) {
           toast(`已制作 ${RECIPES[+b.dataset.recipe].name}`);
           renderHud();
+          renderInventory();
         }
       }),
   );
+  document.querySelectorAll("[data-inv]").forEach((button) => {
+    button.oncontextmenu = (event) => event.preventDefault();
+    button.onmousedown = (event) => {
+      const index = Number(button.dataset.inv),
+        slot = inventory.slots[index];
+      if (event.button === 0) {
+        if (!carried) {
+          carried = slot;
+          inventory.slots[index] = null;
+        } else if (!slot) {
+          inventory.slots[index] = carried;
+          carried = null;
+        } else if (slot.id === carried.id && slot.count < 64) {
+          const moved = Math.min(64 - slot.count, carried.count);
+          slot.count += moved;
+          carried.count -= moved;
+          if (!carried.count) carried = null;
+        } else {
+          inventory.slots[index] = carried;
+          carried = slot;
+        }
+      } else if (event.button === 2) {
+        if (!carried && slot) {
+          const take = Math.ceil(slot.count / 2);
+          carried = { ...slot, count: take };
+          slot.count -= take;
+          if (!slot.count) inventory.slots[index] = null;
+        } else if (carried) {
+          if (!slot) {
+            inventory.slots[index] = { ...carried, count: 1 };
+            carried.count--;
+          } else if (slot.id === carried.id && slot.count < 64) {
+            slot.count++;
+            carried.count--;
+          }
+          if (!carried.count) carried = null;
+        }
+      }
+      renderHud();
+      renderInventory();
+    };
+  });
+  $("#carried").textContent = carried
+    ? `手持：${ALL_DEFINITIONS[carried.id]?.name || carried.id} ×${carried.count}`
+    : "手持：无（左键交换，右键拆分/单放）";
 }
 function updateTarget() {
   const h = target();
@@ -835,6 +992,7 @@ function save() {
       z: e.mesh.position.z,
       hp: e.hp,
     })),
+    stations: [...stations],
   });
   localStorage.setItem("tidalcraft-save-v1", data);
   toast("世界已保存");
@@ -853,6 +1011,8 @@ function load() {
   inventory = d.inventory;
   modifications = new Map(d.modifications || []);
   difficulty = d.difficulty || "normal";
+  stations = new Map(d.stations || []);
+  restoredEntities = d.entities || null;
   $("#seed").value = seedText;
   $("#load-note").textContent = "发现本地存档，将从上次位置继续。";
   return true;
@@ -902,13 +1062,16 @@ function begin(fresh = false) {
   spawnEntities();
   renderHud();
   $("#menu").classList.add("hidden");
+  frameTimes = [];
+  last = performance.now();
   started = true;
   canvas.requestPointerLock();
 }
 
 function animate(now) {
   requestAnimationFrame(animate);
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const frameMs = now - last,
+    dt = Math.min(0.05, frameMs / 1000);
   last = now;
   if (started && !player.dead) {
     updatePlayer(dt);
@@ -926,7 +1089,7 @@ function animate(now) {
       0.25 + 0.55 * daylight,
     );
     scene.fog.color.copy(scene.background);
-    frameTimes.push(dt * 1000);
+    frameTimes.push(frameMs);
     if (frameTimes.length > 300) frameTimes.shift();
     if (now - lastHud > 200) {
       lastHud = now;
@@ -1028,4 +1191,5 @@ load();
 requestAnimationFrame(animate);
 addEventListener("keydown", (e) => {
   if (e.code === "KeyF" && document.pointerLockElement === canvas) actUse();
+  if (e.code === "KeyE") setTimeout(renderInventory);
 });
