@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#79b7dc" />
+    <title>TidalCraft — browser voxel survival</title>
+  </head>
+  <body>
+    <canvas id="game" aria-label="TidalCraft 3D world"></canvas>
+    <div id="vignette"></div><div id="underwater"></div>
+    <header id="topbar"><span class="brand">TIDALCRAFT</span><span id="world-label"></span><button id="save-btn">保存</button></header>
+    <div id="crosshair" aria-hidden="true"></div>
+    <div id="target-label"></div>
+    <section id="status" aria-label="player status">
+      <div><span class="icon">♥</span><span id="health"></span></div>
+      <div><span class="icon food">◆</span><span id="hunger"></span></div>
+      <div id="oxygen-row"><span class="icon oxygen">●</span><span id="oxygen"></span></div>
+    </section>
+    <section id="hotbar" aria-label="hotbar"></section>
+    <div id="hand"><div id="held"></div></div>
+    <aside id="telemetry"><span id="fps">FPS --</span><span id="coords"></span><span id="clock"></span><span id="biome"></span></aside>
+    <div id="toast" role="status"></div>
+    <section id="panel" class="hidden" aria-label="inventory and crafting">
+      <div class="panel-head"><h2>背包与制作</h2><button id="close-panel">×</button></div>
+      <div class="panel-columns"><div><h3>物品栏</h3><div id="inventory"></div></div><div><h3>配方册</h3><div id="recipes"></div></div></div>
+      <p id="carried">手持：无（左键交换，右键拆分/单放）</p>
+    </section>
+    <section id="menu">
+      <div class="menu-card">
+        <div class="logo">TIDAL<span>CRAFT</span></div>
+        <p class="edition">AQUATIC WEB EDITION</p>
+        <h1>原创体素生存世界</h1>
+        <p>探索森林、沙漠、高山与深海。采集、建造、制作，并在夜幕降临前找到庇护。</p>
+        <label>世界种子 <input id="seed" value="tidalcraft" maxlength="32" /></label>
+        <label>难度 <select id="difficulty"><option value="peaceful">和平</option><option value="easy">简单</option><option value="normal" selected>普通</option><option value="hard">困难</option></select></label>
+        <div class="menu-actions"><button id="play">进入世界</button><button id="new-world">新世界</button></div>
+        <p class="controls">WASD 移动 · 鼠标观察 · 左键挖掘 · 右键放置 · F 使用/进食/射击 · 空格跳跃/游泳 · Shift 疾跑 · C 下蹲 · E 背包 · 1–9 快捷栏</p>
+        <p id="load-note"></p>
+      </div>
+    </section>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
